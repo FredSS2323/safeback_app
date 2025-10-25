@@ -1,0 +1,26 @@
+name: safeback_app
+description: "Aplicativo SafeBack para detectar presença no banco traseiro."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.9.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  flutter_bluetooth_serial: ^0.4.0
+  audioplayers: ^6.5.1
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/sounds/alerta.mp3
