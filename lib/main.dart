@@ -36,25 +36,40 @@ class _SafeBackHomeState extends State<SafeBackHome> {
   BluetoothDevice? _device;
   BluetoothConnection? _connection;
   bool _connected = false;
-  String _status = "Desconectado";
-  final _player = AudioPlayer();
-  Timer? _reconnectTimer;
+  bool _modoSimulacao = true; // modo de teste sem ESP32
+  bool _alertaAtivo = false; // controla se o som está tocando
 
-  /// Função de conexão manual
+  String _status = "Desconectado";
+  final AudioPlayer _player = AudioPlayer();
+
+  Timer? _reconnectTimer;
+  Timer? _alertTimer;
+  Timer? _verificacaoTimer;
+
+  final int _tempoVerificacao = 10; // segundos
+
+  /// Conecta ao ESP32 ou entra em modo simulação
   Future<void> _connectToESP() async {
+    if (_modoSimulacao) {
+      setState(() {
+        _connected = true;
+        _status = "Conectado";
+      });
+      _iniciarContagemDeVerificacao();
+      return;
+    }
+
     setState(() => _status = "Procurando dispositivos...");
 
     try {
       final devices = await FlutterBluetoothSerial.instance.getBondedDevices();
 
-      // Procura o dispositivo com nome "SafeBack"
       _device = devices.firstWhere(
         (d) => d.name == "SafeBack",
         orElse: () => throw Exception("Dispositivo 'SafeBack' não encontrado"),
       );
 
-      _status = "Conectando a ${_device!.name}...";
-      setState(() {});
+      setState(() => _status = "Conectando a ${_device!.name}...");
 
       _connection = await BluetoothConnection.toAddress(_device!.address);
 
@@ -63,12 +78,14 @@ class _SafeBackHomeState extends State<SafeBackHome> {
         _status = "Conectado a ${_device!.name}";
       });
 
+      _iniciarContagemDeVerificacao();
+
       _connection!.input!.listen((Uint8List data) {
         final message = String.fromCharCodes(data).trim();
         debugPrint("Recebido: $message");
 
         if (message.contains("OCUPADO")) {
-          _tocarAlerta();
+          _reiniciarContagem();
         }
       }).onDone(() {
         setState(() {
@@ -86,7 +103,7 @@ class _SafeBackHomeState extends State<SafeBackHome> {
     }
   }
 
-  /// Reconexão automática a cada 5s se a conexão cair
+  /// Reconexão automática
   void _startAutoReconnect() {
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
@@ -99,25 +116,87 @@ class _SafeBackHomeState extends State<SafeBackHome> {
     });
   }
 
-  /// Desconectar do ESP32
+  /// Desconecta e reseta tudo
   Future<void> _disconnect() async {
     await _connection?.close();
+    await _pararAlerta();
+    _cancelarContagens();
+
     setState(() {
       _connected = false;
       _status = "Desconectado";
     });
+
     _reconnectTimer?.cancel();
   }
 
-  /// Toca alerta sonoro
+  /// 🔊 Tocar alerta
   Future<void> _tocarAlerta() async {
-    await _player.play(AssetSource('sounds/alerta.mp3'));
+    await _player.play(AssetSource('sounds/alerta.mp3'), volume: 1.0);
+    _player.setReleaseMode(ReleaseMode.loop);
+    setState(() {
+      _alertaAtivo = true;
+      _status = "⚠️ ALERTA ATIVO!";
+    });
+
+    _alertTimer?.cancel();
+    _alertTimer = Timer(const Duration(seconds: 15), () {
+      _pararAlerta();
+    });
+  }
+
+  /// ⏹️ Parar alerta
+  Future<void> _pararAlerta() async {
+    _alertTimer?.cancel();
+    await _player.stop();
+    setState(() {
+      _alertaAtivo = false;
+      if (_connected) {
+        _status = "Alerta desativado.";
+      }
+    });
+  }
+
+  /// ⏱️ Inicia contagem de verificação
+  void _iniciarContagemDeVerificacao() {
+    _verificacaoTimer?.cancel();
+    debugPrint("⏱️ Iniciando contagem de $_tempoVerificacao segundos...");
+    _verificacaoTimer = Timer(Duration(seconds: _tempoVerificacao), () {
+      debugPrint("⚠️ Nenhum sinal recebido — acionando alerta!");
+      _tocarAlerta();
+    });
+  }
+
+  /// Reinicia contagem quando sinal é recebido
+  void _reiniciarContagem() {
+    debugPrint("🔄 Sinal recebido — reiniciando contagem.");
+    _verificacaoTimer?.cancel();
+    _iniciarContagemDeVerificacao();
+  }
+
+  /// Cancela timers
+  void _cancelarContagens() {
+    _verificacaoTimer?.cancel();
+    _alertTimer?.cancel();
+  }
+
+  /// Simula sinal vindo do ESP
+  void _simularSinalDoESP() {
+    if (!_connected) return;
+    debugPrint("Simulação: recebendo sinal OCUPADO...");
+    setState(() {
+      _status = "Sinal simulado recebido (OCUPADO)";
+    });
+    _reiniciarContagem();
   }
 
   @override
   void dispose() {
     _reconnectTimer?.cancel();
+    _alertTimer?.cancel();
+    _verificacaoTimer?.cancel();
     _connection?.dispose();
+    _player.dispose();
     super.dispose();
   }
 
@@ -128,49 +207,50 @@ class _SafeBackHomeState extends State<SafeBackHome> {
         title: const Text("SafeBack"),
         centerTitle: true,
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              _connected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
-              size: 100,
-              color: _connected ? Colors.blue : Colors.grey,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              _status,
-              style: const TextStyle(fontSize: 18),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 32),
-
-            // BOTÃO DE CONEXÃO / DESCONECTAR
-            ElevatedButton.icon(
-              onPressed: _connected ? _disconnect : _connectToESP,
-              icon: Icon(_connected ? Icons.link_off : Icons.bluetooth_searching),
-              label: Text(_connected ? "Desconectar" : "Conectar ao Safeback"),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                textStyle: const TextStyle(fontSize: 18),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                _connected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
+                size: 100,
+                color: _connected ? Colors.blue : Colors.grey,
               ),
-            ),
-
-            const SizedBox(height: 20),
-
-            // BOTÃO TESTE DE ALERTA
-            ElevatedButton.icon(
-              onPressed: _tocarAlerta,
-              icon: const Icon(Icons.volume_up),
-              label: const Text("Testar alerta sonoro"),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.orange,
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                textStyle: const TextStyle(fontSize: 18),
+              const SizedBox(height: 16),
+              Text(
+                _status,
+                style: const TextStyle(fontSize: 18),
+                textAlign: TextAlign.center,
               ),
-            ),
-          ],
+              const SizedBox(height: 32),
+
+              ElevatedButton.icon(
+                onPressed: _connected ? _disconnect : _connectToESP,
+                icon: Icon(_connected ? Icons.link_off : Icons.bluetooth_searching),
+                label: Text(_connected ? "Desconectar" : "Conectar ao SafeBack"),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  textStyle: const TextStyle(fontSize: 18),
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              if (_alertaAtivo)
+                ElevatedButton.icon(
+                  onPressed: _pararAlerta,
+                  icon: const Icon(Icons.stop_circle),
+                  label: const Text("Desativar Alarme"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red,
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    textStyle: const TextStyle(fontSize: 18, color: Colors.white),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
